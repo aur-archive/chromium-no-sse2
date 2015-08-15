@@ -1,0 +1,186 @@
+# Maintainer: graysky <graysky AT archlinux DOT org>
+# contributor: Evangelos Foutras <evangelos@foutrelis.com>
+# Contributor: Pierre Schmitz <pierre@archlinux.de>
+# Contributor: Jan "heftig" Steffens <jan.steffens@gmail.com>
+# Contributor: Daniel J Griffiths <ghost1227@archlinux.us>
+
+pkgname=chromium-no-sse2
+pkgver=36.0.1985.143
+pkgrel=1
+pkgdesc="The open-source project behind Google Chrome, without an sse2 dependency"
+arch=('i686')
+url="https://github.com/graysky2/chromium-no-sse2-patch"
+license=('BSD')
+depends=('gtk2' 'nss' 'alsa-lib' 'xdg-utils' 'bzip2' 'libevent' 'libxss'
+         'libexif' 'libgcrypt' 'ttf-font' 'systemd' 'dbus' 'flac' 'snappy'
+         'speech-dispatcher' 'pciutils' 'libpulse' 'harfbuzz'
+         'desktop-file-utils' 'hicolor-icon-theme')
+makedepends=('python2' 'perl' 'gperf' 'yasm' 'mesa' 'libgnome-keyring'
+             'elfutils' 'subversion' 'ninja' 'clang')
+optdepends=('kdebase-kdialog: needed for file dialogs in KDE'
+            'gnome-keyring: for storing passwords in GNOME keyring'
+            'libgnome-keyring: for storing passwords in GNOME keyring'
+            'kdeutils-kwalletmanager: for storing passwords in KWallet')
+_pkgname=chromium
+_patchver=36
+provides='chromium'
+conflicts='chromium'
+backup=('etc/chromium/default')
+options=('!strip')
+install=chromium.install
+source=(https://commondatastorage.googleapis.com/chromium-browser-official/$_pkgname-$pkgver.tar.xz
+        chromium.desktop
+        chromium.default
+        chromium-nacl-bootstrap-cflags.patch
+        https://raw.githubusercontent.com/graysky2/$pkgname-patch/master/undo_removing_sse2_for_v$_patchver.patch
+        chromium.sh)
+sha256sums=('0631d7442991f0b4b942477c58a9294e9e3eb21ffd3c8626e4ab663b8345c316'
+            '09bfac44104f4ccda4c228053f689c947b3e97da9a4ab6fa34ce061ee83d0322'
+            '478340d5760a9bd6c549e19b1b5d1c5b4933ebf5f8cfb2b3e2d70d07443fe232'
+            'd82bafd8d4d6517c2d420b2987fdbe1dfcc32d5fed74a6c0011bcb2f868225c3'
+            'cc39de00322a0133a2fab61851ce8ccf259efd645cdb76a341d87108e9ae94b6'
+            '4999fded897af692f4974f0a3e3bbb215193519918a1fa9b31ed51e74a2dccb9')
+
+# Google API keys (see http://www.chromium.org/developers/how-tos/api-keys)
+# Note: These are for Arch Linux use ONLY. For your own distribution, please
+# get your own set of keys. Feel free to contact foutrelis@archlinux.org for
+# more information.
+_google_api_key=AIzaSyDwr302FpOSkGRpLlUpPThNTDPbXcIn_FM
+_google_default_client_id=413772536636.apps.googleusercontent.com
+_google_default_client_secret=0ZChLK6AxeA3Isu96MkwqDR4
+
+prepare() {
+  cd "$_pkgname-$pkgver"
+
+  # Reverse https://codereview.chromium.org/187423002
+  patch -Np1 -i "$srcdir/undo_removing_sse2_for_v$_patchver.patch"
+
+  # Filter out -fstack-protector-strong for nacl_helper_bootstrap
+  # https://code.google.com/p/chromium/issues/detail?id=104569
+  patch -Np0 -i ../chromium-nacl-bootstrap-cflags.patch
+
+  # Use Python 2
+  find . -type f -exec sed -i -r \
+    -e 's|/usr/bin/python$|&2|g' \
+    -e 's|(/usr/bin/python2)\.4$|\1|g' \
+    {} +
+  # There are still a lot of relative calls which need a workaround
+  mkdir "$srcdir/python2-path"
+  ln -s /usr/bin/python2 "$srcdir/python2-path/python"
+
+  # Download NaCL toolchains
+  python2 build/download_nacl_toolchains.py \
+    --packages nacl_x86_newlib,pnacl_newlib,pnacl_translator
+
+  # Build with clang as a temporary solution to startup crash with GCC 4.9
+  mkdir -p third_party/llvm-build/Release+Asserts/bin
+  ln -s /usr/bin/clang third_party/llvm-build/Release+Asserts/bin/
+  ln -s /usr/bin/clang++ third_party/llvm-build/Release+Asserts/bin/
+  ln -s /usr/bin/llvm-symbolizer third_party/llvm-build/Release+Asserts/bin/
+  # clang 3.4 doesn't support this option
+  sed -i '/-Wno-absolute-value/d' build/common.gypi
+}
+
+build() {
+  cd "$_pkgname-$pkgver"
+
+  export PATH="$srcdir/python2-path:$PATH"
+
+  # CFLAGS are passed through release_extra_cflags below
+  export -n CFLAGS CXXFLAGS
+
+  local _chromium_conf=(
+    -Ddisable_sse2=1
+    -Dgoogle_api_key=$_google_api_key
+    -Dgoogle_default_client_id=$_google_default_client_id
+    -Dgoogle_default_client_secret=$_google_default_client_secret
+    -Dwerror=
+    -Dclang=1
+    -Dclang_use_chrome_plugins=0
+    -Dpython_ver=2.7
+    -Dlinux_link_gsettings=1
+    -Dlinux_link_libpci=1
+    -Dlinux_link_libspeechd=1
+    -Dlinux_link_pulseaudio=1
+    -Dlinux_strip_binary=1
+    -Dlinux_use_bundled_binutils=0
+    -Dlinux_use_bundled_gold=0
+    -Dlinux_use_gold_flags=0
+    -Dlogging_like_official_build=1
+    -Drelease_extra_cflags="$CFLAGS"
+    -Dlibspeechd_h_prefix=speech-dispatcher/
+    -Dffmpeg_branding=Chrome
+    -Dproprietary_codecs=1
+    -Duse_system_bzip2=1
+    -Duse_system_flac=1
+    -Duse_system_ffmpeg=0
+    -Duse_system_harfbuzz=1
+    -Duse_system_libevent=1
+    -Duse_system_libjpeg=1
+    -Duse_system_libpng=1
+    -Duse_system_libxml=0
+    -Duse_system_snappy=1
+    -Duse_system_ssl=0
+    -Duse_system_xdg_utils=1
+    -Duse_system_yasm=1
+    -Duse_system_zlib=0
+    -Dusb_ids_path=/usr/share/hwdata/usb.ids
+    -Duse_mojo=0
+    -Duse_gconf=0
+    -Ddisable_fatal_linker_warnings=1
+    -Ddisable_glibc=1)
+
+  build/linux/unbundle/replace_gyp_files.py "${_chromium_conf[@]}"
+  build/gyp_chromium --depth=. "${_chromium_conf[@]}"
+
+  ninja -C out/Release chrome chrome_sandbox chromedriver
+}
+
+package() {
+  cd "$_pkgname-$pkgver"
+
+  install -D out/Release/chrome "$pkgdir/usr/lib/chromium/chromium"
+
+  install -Dm4755 -o root -g root out/Release/chrome_sandbox \
+    "$pkgdir/usr/lib/chromium/chrome-sandbox"
+
+  install -D out/Release/chromedriver "$pkgdir/usr/lib/chromium/chromedriver"
+
+  cp out/Release/{*.pak,libffmpegsumo.so,nacl_helper{,_bootstrap}} \
+    out/Release/{libppGoogleNaClPluginChrome.so,nacl_irt_*.nexe} \
+    "$pkgdir/usr/lib/chromium/"
+
+  # Manually strip binaries so that 'nacl_irt_*.nexe' is left intact
+  strip $STRIP_BINARIES "$pkgdir/usr/lib/chromium/"{chromium,chrome-sandbox} \
+    "$pkgdir/usr/lib/chromium/chromedriver" \
+    "$pkgdir/usr/lib/chromium/"nacl_helper{,_bootstrap}
+  strip $STRIP_SHARED "$pkgdir/usr/lib/chromium/libffmpegsumo.so" \
+    "$pkgdir/usr/lib/chromium/libppGoogleNaClPluginChrome.so"
+
+  # Allow users to override command-line options
+  install -Dm644 "$srcdir/chromium.default" "$pkgdir/etc/chromium/default"
+
+  cp -a out/Release/locales out/Release/icudtl.dat "$pkgdir/usr/lib/chromium/"
+
+  install -Dm644 out/Release/chrome.1 "$pkgdir/usr/share/man/man1/chromium.1"
+
+  install -Dm644 "$srcdir/chromium.desktop" \
+    "$pkgdir/usr/share/applications/chromium.desktop"
+
+  for size in 22 24 48 64 128 256; do
+    install -Dm644 "chrome/app/theme/chromium/product_logo_$size.png" \
+      "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps/chromium.png"
+  done
+
+  for size in 16 32; do
+    install -Dm644 "chrome/app/theme/default_100_percent/chromium/product_logo_$size.png" \
+      "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps/chromium.png"
+  done
+
+  install -D "$srcdir/chromium.sh" "$pkgdir/usr/bin/chromium"
+  ln -s /usr/lib/chromium/chromedriver "$pkgdir/usr/bin/chromedriver"
+
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/chromium/LICENSE"
+}
+
+# vim:set ts=2 sw=2 et:
